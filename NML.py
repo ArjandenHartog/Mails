@@ -152,7 +152,7 @@ def maak_email(row):
             print(f"Waarschuwing: Kon e-mail niet weergeven voor {row['Klant']}")
 
 # Inlezen van het Excel-bestand
-bestandspad = "test.xlsx"  # Changed from "/test.xlsx" to use relative path
+bestandspad = "Mails NML.xlsx"  # Changed from "/test.xlsx" to use relative path
 # or use absolute path with proper Windows formatting:
 # bestandspad = r"C:\Users\arjan_h\Documents\GitHub\Mails\test.xlsx"
 kolomnamen = ['Ordernummer', 'Orderdatum', 'Klant', 'gemaild', 'Leverdatum', 'Verwachte leverdatum', 'Land/site', 'Extra info']
