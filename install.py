@@ -25,7 +25,6 @@ def download_files():
     base_url = "https://raw.githubusercontent.com/ArjandenHartog/Mails/main/"
     files = {
         'lampentotaal_mail.py': 'Main application file',
-        'requirements.txt': 'Requirements file'
     }
     
     try:
