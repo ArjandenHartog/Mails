@@ -1,3 +1,30 @@
+import sys
+import subprocess
+import pkg_resources
+
+def install_required_packages():
+    """Installeer benodigde packages als ze nog niet geïnstalleerd zijn"""
+    required = {'pandas', 'pywin32'}
+    installed = {pkg.key for pkg in pkg_resources.working_set}
+    missing = required - installed
+    
+    if missing:
+        try:
+            subprocess.check_call([sys.executable, '-m', 'pip', 'install', *missing])
+            print("Benodigde packages zijn geïnstalleerd.")
+            # Herstart het script om de nieuwe packages te laden
+            python = sys.executable
+            subprocess.call([python] + sys.argv)
+            sys.exit()
+        except Exception as e:
+            print(f"Fout bij installeren packages: {str(e)}")
+            sys.exit(1)
+
+# Check en installeer packages bij eerste gebruik
+if __name__ == "__main__":
+    install_required_packages()
+
+# Standaard imports
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from datetime import datetime
@@ -24,9 +51,27 @@ def check_outlook():
     except Exception as e:
         return False
 
-def get_delivery_timing(expected_date):
-    # ...existing code from nietwebshop.py...
-    pass
+def get_delivery_timing(exp_date):
+    """Bepaal de juiste leveringstiming op basis van de verwachte datum"""
+    today = datetime.now()
+    this_week = today.isocalendar()[1]
+    delivery_week = exp_date.isocalendar()[1]
+    days_until = (exp_date - today).days
+    
+    if days_until < 0:
+        return "deze week"  # Als datum in verleden ligt
+    elif days_until <= 2:
+        return "deze week"
+    elif days_until <= 5:
+        return "eind deze week"
+    elif days_until <= 7:
+        return "begin volgende week"
+    elif days_until <= 10:
+        return "in de loop van volgende week"
+    elif days_until <= 14:
+        return "eind volgende week"
+    else:
+        return f"in week {delivery_week}"
 
 def parse_date(date_str):
     # ...existing code from nietwebshop.py...
@@ -48,7 +93,7 @@ def create_outlook_mail(to_address, subject, body):
     pass
 
 def get_greeting(name, language='NL'):
-    """Get time-based greeting with name in specified language"""
+    """Get time-based greeting without name in specified language"""
     hour = datetime.now().hour
     
     if language.upper() in ['NL', 'BE']:
@@ -73,7 +118,7 @@ def get_greeting(name, language='NL'):
         else:
             greeting = "Guten Abend"
             
-    return f"{greeting} {name},"
+    return greeting  # Return without comma
 
 class MailApp:
     def __init__(self):
@@ -110,6 +155,11 @@ class MailApp:
             font=('Helvetica', 10),
             background='#2ecc71'
         )
+        
+        self.signature = """<br><br>Met vriendelijke groet,<br><br>
+LampenTotaal<br>
+Dorpsstraat 2a  |  4043 KK  Opheusden  |  T. 0488.750930<br>
+IBAN NL65RABO0116060549  |  www.LampenTotaal.nl"""
         
         self.create_widgets()
 
@@ -172,8 +222,8 @@ class MailApp:
         
         self.create_action_button(
             right_col,
-            "🚚 NML Orders",
-            "Verwerk orders van NML bestellingen",
+            "🚚 NML + NNB Orders",  # Aangepaste tekst
+            "Verwerk orders van NML en NNB",  # Duidelijkere beschrijving
             lambda: self.process_file('nml')
         )
         
@@ -353,42 +403,42 @@ class MailApp:
             return None
         
         outlook = win32com.client.Dispatch('Outlook.Application')
-        mail = outlook.CreateItem(0)
+        namespace = outlook.GetNamespace("MAPI")
+        
+        # Zoek het gedeelde postvak
+        shared_inbox = None
+        for account in namespace.Accounts:
+            if "info@lampentotaal.nl" in str(account).lower():
+                shared_inbox = account
+                break
+        
+        # Maak mail aan vanuit het juiste account
+        if shared_inbox:
+            mail = shared_inbox.DeliveryStore.GetDefaultFolder(6).Items.Add()
+        else:
+            mail = outlook.CreateItem(0)
         
         exp_date = pd.to_datetime(row['Verwachte leverdatum'])
         is_short_delay, week_nr = self.get_delivery_info(exp_date)
+        delivery_timing = get_delivery_timing(exp_date)
         
         mail.Subject = f"Update bestelling {row['Ordernummer']}"
         
-        # Get greeting with customer name in correct language
-        greeting = get_greeting(row['Klant'], str(row['Land']).upper())
+        # Get template first
+        body = self.get_mail_template(str(row['Land']).upper(), is_short_delay, week_nr, delivery_timing)
         
-        # Get template without signature
-        body = self.get_mail_template(str(row['Land']).upper(), is_short_delay, week_nr)
-        
-        # Replace default greetings with time-based greeting
-        body = body.replace("Guten Tag,", greeting)
-        body = body.replace("Bonjour,", greeting)
-        body = body.replace("Goedemiddag,", greeting)
+        # Get greeting without customer name and replace it in the template
+        greeting = get_greeting(str(row['Land']).upper())
+        body = body.replace("Goedemiddag,", f"{greeting} {row['Klant']},")
+        body = body.replace("Guten Tag,", f"{greeting} {row['Klant']},")
+        body = body.replace("Bonjour,", f"{greeting} {row['Klant']},")
         
         if pd.notna(row.get('Extra opmerking')):
             body = f"{body}\n\nExtra opmerking: {row['Extra opmerking']}"
         
-        # Convert to HTML and get signature
-        mail.HTMLBody = body.replace('\n', '<br>')
+        # Convert to HTML and add signature
+        mail.HTMLBody = body.replace('\n', '<br>') + self.signature
         
-        # Get default signature
-        try:
-            # Try to get signature by creating temporary mail
-            temp_mail = outlook.CreateItem(0)
-            signature = temp_mail.HTMLBody
-            if signature:
-                mail.HTMLBody += signature
-            temp_mail = None
-        except:
-            # If getting signature fails, continue without it
-            pass
-            
         if display:
             mail.Display()
         
@@ -396,51 +446,45 @@ class MailApp:
 
     def create_nml_mail(self, row, display=True):
         outlook = win32com.client.Dispatch('outlook.application')
-        outlook_version = detect_outlook_version()
+        namespace = outlook.GetNamespace("MAPI")
         
-        if outlook_version == "new":
-            namespace = outlook.GetNamespace("MAPI")
-            mail = namespace.CreateItem(0)
+        # Zoek het gedeelde postvak
+        shared_inbox = None
+        for account in namespace.Accounts:
+            if "info@lampentotaal.nl" in str(account).lower():
+                shared_inbox = account
+                break
+        
+        # Maak mail aan vanuit het juiste account
+        if shared_inbox:
+            mail = shared_inbox.DeliveryStore.GetDefaultFolder(6).Items.Add()
         else:
-            mail = outlook.CreateItem(0)
+            mail = namespace.CreateItem(0) if detect_outlook_version() == "new" else outlook.CreateItem(0)
 
         mail.Subject = f"Update bestelling {row['Ordernummer']}"
-        
-        # Get greeting with customer name in correct language
-        greeting = get_greeting(row['Klant'], str(row['Land/site']).upper())
         
         # Get template
         body = self.get_nml_template(row)
         
-        # Replace all possible greetings with time-based greeting
+        # Get greeting without customer name
+        greeting = get_greeting(str(row['Land/site']).upper())
+        
+        # Replace all possible greetings with time-based greeting + name (only once)
         replacements = {
-            "Geachte": greeting.replace(",", ""),
-            "Cher/Chère": greeting.replace(",", ""),
-            "Sehr geehrte(r)": greeting.replace(",", ""),
-            "Guten Tag": greeting.replace(",", ""),
-            "Bonjour": greeting.replace(",", ""),
-            "Goedemiddag": greeting.replace(",", "")
+            f"Geachte {row['Klant']}": f"{greeting} {row['Klant']},",
+            f"Cher/Chère {row['Klant']}": f"{greeting} {row['Klant']},",
+            f"Sehr geehrte(r) {row['Klant']}": f"{greeting} {row['Klant']},"
         }
         
         for old, new in replacements.items():
             body = body.replace(old, new)
         
-        # Convert to HTML and get signature
-        mail.HTMLBody = body.replace('\n', '<br>')
+        # Convert to HTML and add signature
+        mail.HTMLBody = body.replace('\n', '<br>') + self.signature
         
-        # Get default signature
-        try:
-            temp_mail = outlook.CreateItem(0)
-            signature = temp_mail.HTMLBody
-            if signature:
-                mail.HTMLBody += signature
-            temp_mail = None
-        except:
-            pass
-            
         if display:
             mail.Display()
-            
+        
         return mail
 
     def get_delivery_info(self, exp_date):
@@ -449,16 +493,16 @@ class MailApp:
         week_nr = exp_date.isocalendar()[1]
         return diff <= 7, week_nr
 
-    def get_mail_template(self, country, is_short_delay, week_nr):
+    def get_mail_template(self, country, is_short_delay, week_nr, timing):
         if country in ['NL', 'BE']:  # Handle both NL and BE
             if is_short_delay:
-                return """Goedemiddag,
+                return f"""Goedemiddag,
 
 Hartelijk dank voor uw bestelling.
 
 Hierbij meer informatie met betrekking tot de uitlevering van de bestelling die u bij ons hebt geplaatst.
 
-Wij verwachten in de loop van volgende week uw pakket te gaan ontvangen van onze leverancier, uiteraard gaan wij ons best doen om uw pakket verder direct te gaan versturen naar uw postadres.
+Wij verwachten {timing} uw pakket te gaan ontvangen van onze leverancier, uiteraard gaan wij ons best doen om uw pakket verder direct te gaan versturen naar uw postadres.
 Zodra wij uw pakket hebben verzonden ontvangt u een track en trace code per mail. Hiermee kunt u het pakket volgen."""
             else:
                 return f"""Goedemiddag,
@@ -473,6 +517,14 @@ Wij hopen u voldoende te hebben geïnformeerd. Mocht u nog vragen hebben, mail o
 Excuses voor het ongemak!"""
 
         elif country in ['D', 'DE']:  # Handle both D and DE
+            timing_de = {
+                "deze week": "diese Woche",
+                "eind deze week": "Ende dieser Woche",
+                "begin volgende week": "Anfang nächster Woche",
+                "in de loop van volgende week": "im Laufe der nächsten Woche",
+                "eind volgende week": "Ende nächster Woche"
+            }.get(timing, f"in Kalenderwoche {week_nr}")
+            
             if is_short_delay:
                 return f"""Guten Tag,
 
@@ -480,7 +532,7 @@ Vielen Dank für Ihre Bestellung.
 
 Hiermit möchten wir Sie über den Status Ihrer Bestellung informieren.
 
-Wir erwarten, dass wir Ihr Paket im Laufe der nächsten Woche von unserem Lieferanten erhalten werden. Selbstverständlich werden wir uns bemühen, Ihr Paket dann umgehend an Ihre Postadresse zu versenden.
+Wir erwarten, dass wir Ihr Paket {timing_de} von unserem Lieferanten erhalten werden. Selbstverständlich werden wir uns bemühen, Ihr Paket dann umgehend an Ihre Postadresse zu versenden.
 Sobald wir Ihr Paket versendet haben, erhalten Sie eine Track & Trace Nummer per E-Mail.
 
 Wir hoffen, Sie ausreichend informiert zu haben. Bei Fragen können Sie uns gerne kontaktieren."""
@@ -499,6 +551,14 @@ Wir entschuldigen uns für die Unannehmlichkeiten.
 Falls sich an der oben genannten Lieferzeit etwas ändern sollte, werden wir Sie selbstverständlich umgehend informieren."""
 
         elif country in ['F', 'FR']:  # Handle both F and FR
+            timing_fr = {
+                "deze week": "cette semaine",
+                "eind deze week": "en fin de semaine",
+                "begin volgende week": "en début de semaine prochaine",
+                "in de loop van volgende week": "au cours de la semaine prochaine",
+                "eind volgende week": "en fin de semaine prochaine"
+            }.get(timing, f"dans la semaine {week_nr}")
+            
             if is_short_delay:
                 return f"""Bonjour,
 
@@ -506,7 +566,7 @@ Nous vous remercions de votre commande.
 
 Voici plus d'informations concernant la livraison de votre commande.
 
-Nous prévoyons de recevoir votre colis de notre fournisseur au cours de la semaine prochaine. Bien entendu, nous ferons de notre mieux pour expédier votre colis directement à votre adresse postale.
+Nous prévoyons de recevoir votre colis {timing_fr} de notre fournisseur. Bien entendu, nous ferons de notre mieux pour expédier votre colis directement à votre adresse postale.
 Dès que nous aurons expédié votre colis, vous recevrez un code de suivi par e-mail vous permettant de suivre le colis.
 
 Nous espérons vous avoir suffisamment informé. Si vous avez des questions, n'hésitez pas à nous contacter."""
@@ -615,6 +675,35 @@ Si le délai de livraison mentionné ci-dessus devait changer, nous vous en info
 
     def create_template(self, template_type):
         try:
+            # Bepaal standaard directory (Documents/Backorders)
+            default_dir = os.path.join(os.path.expanduser("~"), "Documents", "Backorders")
+            
+            # Maak directory aan als deze niet bestaat
+            if not os.path.exists(default_dir):
+                os.makedirs(default_dir)
+            
+            # Bepaal de standaard bestandsnaam
+            default_filename = f"template_{template_type}.xlsx"
+            default_path = os.path.join(default_dir, default_filename)
+            
+            # Open bestandsdialoog met standaard directory
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx")],
+                initialfile=default_filename,
+                initialdir=default_dir,
+                title="Sla template op als"
+            )
+            
+            if not file_path:  # Als gebruiker annuleert
+                return
+            
+            # Controleer of het pad geldig is
+            directory = os.path.dirname(file_path)
+            if not os.path.exists(directory):
+                os.makedirs(directory)
+                
+            # Maak DataFrame met juiste kolommen zoals eerder
             if template_type == 'niet_webshop':
                 df = pd.DataFrame(columns=[
                     'Ordernummer', 'Orderdatum', 'Klant', 'Gemaild', 
@@ -646,29 +735,40 @@ Si le délai de livraison mentionné ci-dessus devait changer, nous vous en info
                     'Extra info': ['Alternatief product suggestie']
                 }
 
-            # Add example row
+            # Voeg voorbeeldrij toe
             example_df = pd.DataFrame(example_data)
             df = pd.concat([df, example_df], ignore_index=True)
 
-            # Save dialog
-            file_path = filedialog.asksaveasfilename(
-                defaultextension=".xlsx",
-                filetypes=[("Excel files", "*.xlsx")],
-                initialfile=f"template_{template_type}.xlsx"
-            )
-            
-            if file_path:
+            # Sla het bestand op met extra controles
+            try:
                 df.to_excel(file_path, index=False)
                 
-                # Automatically open the file
-                os.startfile(file_path)
-                
-                messagebox.showinfo(
-                    "Succes", 
-                    f"Template is opgeslagen en geopend:\n{os.path.basename(file_path)}"
+                # Controleer of het bestand succesvol is aangemaakt
+                if os.path.exists(file_path):
+                    os.startfile(file_path)
+                    messagebox.showinfo(
+                        "Template aangemaakt",
+                        f"Template is opgeslagen en geopend:\n{file_path}"
+                    )
+                else:
+                    raise FileNotFoundError(f"Kon het bestand niet aanmaken op locatie: {file_path}")
+                    
+            except PermissionError:
+                messagebox.showerror(
+                    "Fout",
+                    "Kon het bestand niet opslaan. Mogelijk is het geopend in een ander programma."
                 )
+            except Exception as e:
+                messagebox.showerror(
+                    "Fout",
+                    f"Fout bij opslaan van het bestand:\n{str(e)}"
+                )
+                
         except Exception as e:
-            messagebox.showerror("Fout", f"Kon template niet aanmaken:\n{str(e)}")
+            messagebox.showerror(
+                "Fout",
+                f"Onverwachte fout bij aanmaken template:\n{str(e)}\n\nLocatie: {default_dir}"
+            )
 
     def run(self):
         self.window.mainloop()
