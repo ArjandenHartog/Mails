@@ -1,28 +1,40 @@
 import sys
 import subprocess
-import pkg_resources
+import importlib.util
 
-def install_required_packages():
-    """Installeer benodigde packages als ze nog niet geïnstalleerd zijn"""
-    required = {'pandas', 'pywin32'}
-    installed = {pkg.key for pkg in pkg_resources.working_set}
-    missing = required - installed
+def check_package(package_name):
+    """Check if a package is installed and importable"""
+    try:
+        # Try to actually import the package instead of just checking if it exists
+        __import__(package_name.split('.')[0])
+        return True
+    except ImportError:
+        return False
+
+def install_packages():
+    """Install required packages only if they're not already installed"""
+    required_packages = ['pandas', 'win32com']  # Changed from pywin32 to win32com
     
-    if missing:
-        try:
-            subprocess.check_call([sys.executable, '-m', 'pip', 'install', *missing])
-            print("Benodigde packages zijn geïnstalleerd.")
-            # Herstart het script om de nieuwe packages te laden
-            python = sys.executable
-            subprocess.call([python] + sys.argv)
-            sys.exit()
-        except Exception as e:
-            print(f"Fout bij installeren packages: {str(e)}")
-            sys.exit(1)
+    try:
+        need_install = False
+        for package in required_packages:
+            if not check_package(package):
+                print(f"Package {package} needs to be installed")
+                need_install = True
+                if package == 'win32com':
+                    package = 'pywin32'  # Install pywin32 when win32com is needed
+                subprocess.check_call([sys.executable, '-m', 'pip', 'install', package])
+        
+        if need_install:
+            print("Required packages installed. Please restart the application.")
+            sys.exit(0)
+            
+    except Exception as e:
+        print(f"Error installing packages: {str(e)}")
+        sys.exit(1)
 
-# Check en installeer packages bij eerste gebruik
 if __name__ == "__main__":
-    install_required_packages()
+    install_packages()
 
 # Standaard imports
 import tkinter as tk
@@ -33,22 +45,21 @@ import win32com.client
 import os
 
 def detect_outlook_version():
-    """Detecteert of New Outlook of Classic Outlook wordt gebruikt"""
+    """Detecteert welke Outlook versie wordt gebruikt"""
     try:
         outlook = win32com.client.Dispatch('outlook.application')
-        version = outlook.Version
-        return "new" if version.startswith("16.0.15") else "classic"
+        # Als we hier komen is Outlook beschikbaar
+        return "classic"  # Standaard classic gebruiken voor betere compatibiliteit
     except:
-        return "classic"
+        return None
 
 def check_outlook():
-    """Check if Outlook is running and accessible"""
+    """Controleert of Outlook draait en toegankelijk is"""
     try:
         outlook = win32com.client.Dispatch('outlook.application')
-        # Try to access namespace to verify connection
-        outlook.GetNamespace("MAPI")
+        outlook.GetNamespace("MAPI")  # Test de verbinding
         return True
-    except Exception as e:
+    except:
         return False
 
 def get_delivery_timing(exp_date):
@@ -402,90 +413,72 @@ IBAN NL65RABO0116060549  |  www.LampenTotaal.nl"""
         if str(row['Land']) == 'Bol.com':
             return None
         
-        outlook = win32com.client.Dispatch('Outlook.Application')
-        namespace = outlook.GetNamespace("MAPI")
-        
-        # Zoek het gedeelde postvak
-        shared_inbox = None
-        for account in namespace.Accounts:
-            if "info@lampentotaal.nl" in str(account).lower():
-                shared_inbox = account
-                break
-        
-        # Maak mail aan vanuit het juiste account
-        if shared_inbox:
-            mail = shared_inbox.DeliveryStore.GetDefaultFolder(6).Items.Add()
-        else:
-            mail = outlook.CreateItem(0)
-        
-        exp_date = pd.to_datetime(row['Verwachte leverdatum'])
-        is_short_delay, week_nr = self.get_delivery_info(exp_date)
-        delivery_timing = get_delivery_timing(exp_date)
-        
-        mail.Subject = f"Update bestelling {row['Ordernummer']}"
-        
-        # Get template first
-        body = self.get_mail_template(str(row['Land']).upper(), is_short_delay, week_nr, delivery_timing)
-        
-        # Get greeting without customer name and replace it in the template
-        greeting = get_greeting(str(row['Land']).upper())
-        body = body.replace("Goedemiddag,", f"{greeting} {row['Klant']},")
-        body = body.replace("Guten Tag,", f"{greeting} {row['Klant']},")
-        body = body.replace("Bonjour,", f"{greeting} {row['Klant']},")
-        
-        if pd.notna(row.get('Extra opmerking')):
-            body = f"{body}\n\nExtra opmerking: {row['Extra opmerking']}"
-        
-        # Convert to HTML and add signature
-        mail.HTMLBody = body.replace('\n', '<br>') + self.signature
-        
-        if display:
-            mail.Display()
-        
-        return mail
+        try:
+            outlook = win32com.client.Dispatch('Outlook.Application')
+            mail = outlook.CreateItem(0)  # Simpelweg een nieuwe mail maken
+            
+            exp_date = pd.to_datetime(row['Verwachte leverdatum'])
+            is_short_delay, week_nr = self.get_delivery_info(exp_date)
+            delivery_timing = get_delivery_timing(exp_date)
+            
+            mail.Subject = f"Update bestelling {row['Ordernummer']}"
+            
+            # Get template first
+            body = self.get_mail_template(str(row['Land']).upper(), is_short_delay, week_nr, delivery_timing)
+            
+            # Get greeting without customer name and replace it in the template
+            greeting = get_greeting(str(row['Land']).upper())
+            body = body.replace("Goedemiddag,", f"{greeting} {row['Klant']},")
+            body = body.replace("Guten Tag,", f"{greeting} {row['Klant']},")
+            body = body.replace("Bonjour,", f"{greeting} {row['Klant']},")
+            
+            if pd.notna(row.get('Extra opmerking')):
+                body = f"{body}\n\nExtra opmerking: {row['Extra opmerking']}"
+            
+            # Convert to HTML and add signature
+            mail.HTMLBody = body.replace('\n', '<br>') + self.signature
+            
+            if display:
+                mail.Display()
+            
+            return mail
+        except Exception as e:
+            messagebox.showerror("Outlook Fout", f"Fout bij maken mail: {str(e)}")
+            return None
 
     def create_nml_mail(self, row, display=True):
-        outlook = win32com.client.Dispatch('outlook.application')
-        namespace = outlook.GetNamespace("MAPI")
-        
-        # Zoek het gedeelde postvak
-        shared_inbox = None
-        for account in namespace.Accounts:
-            if "info@lampentotaal.nl" in str(account).lower():
-                shared_inbox = account
-                break
-        
-        # Maak mail aan vanuit het juiste account
-        if shared_inbox:
-            mail = shared_inbox.DeliveryStore.GetDefaultFolder(6).Items.Add()
-        else:
-            mail = namespace.CreateItem(0) if detect_outlook_version() == "new" else outlook.CreateItem(0)
+        try:
+            outlook = win32com.client.Dispatch('outlook.application')
+            mail = outlook.CreateItem(0)  # Simpelweg een nieuwe mail maken
 
-        mail.Subject = f"Update bestelling {row['Ordernummer']}"
-        
-        # Get template
-        body = self.get_nml_template(row)
-        
-        # Get greeting without customer name
-        greeting = get_greeting(str(row['Land/site']).upper())
-        
-        # Replace all possible greetings with time-based greeting + name (only once)
-        replacements = {
-            f"Geachte {row['Klant']}": f"{greeting} {row['Klant']},",
-            f"Cher/Chère {row['Klant']}": f"{greeting} {row['Klant']},",
-            f"Sehr geehrte(r) {row['Klant']}": f"{greeting} {row['Klant']},"
-        }
-        
-        for old, new in replacements.items():
-            body = body.replace(old, new)
-        
-        # Convert to HTML and add signature
-        mail.HTMLBody = body.replace('\n', '<br>') + self.signature
-        
-        if display:
-            mail.Display()
-        
-        return mail
+            mail.Subject = f"Update bestelling {row['Ordernummer']}"
+            
+            # Get template
+            body = self.get_nml_template(row)
+            
+            # Get greeting without customer name
+            greeting = get_greeting(str(row['Land/site']).upper())
+            
+            # Replace all possible greetings with time-based greeting + name (only once)
+            replacements = {
+                f"Geachte {row['Klant']}": f"{greeting} {row['Klant']},",
+                f"Cher/Chère {row['Klant']}": f"{greeting} {row['Klant']},",
+                f"Sehr geehrte(r) {row['Klant']}": f"{greeting} {row['Klant']},"
+            }
+            
+            for old, new in replacements.items():
+                body = body.replace(old, new)
+            
+            # Convert to HTML and add signature
+            mail.HTMLBody = body.replace('\n', '<br>') + self.signature
+            
+            if display:
+                mail.Display()
+            
+            return mail
+        except Exception as e:
+            messagebox.showerror("Outlook Fout", f"Fout bij maken mail: {str(e)}")
+            return None
 
     def get_delivery_info(self, exp_date):
         today = datetime.now()
