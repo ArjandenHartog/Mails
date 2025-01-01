@@ -1,6 +1,17 @@
 import sys
 import subprocess
 import importlib.util
+import os
+
+# Add PyInstaller specific code for determining base path
+def get_base_path():
+    """Get absolute path to resource, works for dev and for PyInstaller"""
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return base_path
 
 def check_package(package_name):
     """Check if a package is installed and importable"""
@@ -133,6 +144,9 @@ def get_greeting(name, language='NL'):
 
 class MailApp:
     def __init__(self):
+        # Get base path for resources
+        self.base_path = get_base_path()
+        
         # Window setup
         self.window = tk.Tk()
         self.window.title("LampenTotaal Mail Verwerker")
@@ -668,8 +682,8 @@ Si le délai de livraison mentionné ci-dessus devait changer, nous vous en info
 
     def create_template(self, template_type):
         try:
-            # Bepaal standaard directory (Documents/Backorders)
-            default_dir = os.path.join(os.path.expanduser("~"), "Documents", "Backorders")
+            # Gebruik AppData/Local voor templates in plaats van Documents
+            default_dir = os.path.join(os.getenv('LOCALAPPDATA'), 'LampenTotaal', 'Backorders')
             
             # Maak directory aan als deze niet bestaat
             if not os.path.exists(default_dir):
